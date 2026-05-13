@@ -96,7 +96,7 @@ logger = logging.getLogger(__name__)
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 
-REALTIME_URL = "wss://api.openai.com/v1/realtime?model=gpt-realtime-2"
+REALTIME_URL = "wss://api.openai.com/v1/realtime?model=gpt-realtime-mini"
 
 AUDIO_SAMPLE_RATE  = 24_000
 AUDIO_CHANNELS     = 1
@@ -303,7 +303,7 @@ class RealtimeBridge:
             "type": "session.update",
             "session": {
                 "type": "realtime",
-                "model": "gpt-realtime-2",
+                "model": "gpt-realtime-mini",
                 "instructions": _REALTIME_INSTRUCTIONS,
 
                 "audio": {

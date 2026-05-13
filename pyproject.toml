@@ -9,6 +9,7 @@ dependencies = [
     "langfuse>=4.6.1",
     "msal>=1.36.0",
     "openai>=2.36.0",
+    "pyaudio>=0.2.14",
     "pydantic-ai>=1.93.0",
     "spotipy>=2.26.0",
     "typing-extensions>=4.15.0",

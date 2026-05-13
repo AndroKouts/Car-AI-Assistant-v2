@@ -9,3 +9,7 @@ wheels/
 # Virtual environments
 .venv
 .env
+
+# other
+.spotify_cache
+.token_cache.json
