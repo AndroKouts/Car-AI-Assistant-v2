@@ -1,0 +1,16 @@
+[project]
+name = "car-ai-assistant-v2"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "httpx>=0.28.1",
+    "langfuse>=4.6.1",
+    "msal>=1.36.0",
+    "openai>=2.36.0",
+    "pydantic-ai>=1.93.0",
+    "spotipy>=2.26.0",
+    "typing-extensions>=4.15.0",
+    "websockets>=16.0",
+]
