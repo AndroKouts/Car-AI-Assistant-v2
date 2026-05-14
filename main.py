@@ -88,9 +88,15 @@ async def main() -> None:
     # We keep it open for the entire drive session so all email tool calls
     # share one authenticated HTTP connection with automatic token refresh.
     # user_email comes from config — no need to call get_me() at startup.
+    from db.database import init_db
+    from db.service import DatabaseService
     from email_folder.graph_client import GraphClient
     from email_folder.models import EmailAgentDeps
     from orchestration.realtime_bridge import RealtimeBridge
+
+    await init_db()
+    db = DatabaseService()
+    logger.info("Database ready")
 
     async with GraphClient() as graph_client:
         email_deps = EmailAgentDeps(
@@ -104,6 +110,7 @@ async def main() -> None:
             observer=observer,
             email_deps=email_deps,
             spotify_deps=spotify_deps,
+            db=db,
         )
 
         logger.info("Car assistant starting — speak to begin")

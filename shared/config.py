@@ -31,6 +31,19 @@ def _require(key: str) -> str:
         )
     return val
 
+# ── Database ─────────────────────────────────────────────────────────────────
+ 
+# asyncpg connection URL — used by SQLAlchemy async engine and Alembic.
+# Assembled from individual vars so each piece can be set independently.
+_DB_USER     = os.getenv("POSTGRES_USER",     "assistant")
+_DB_PASSWORD = os.getenv("POSTGRES_PASSWORD", "assistant")
+_DB_HOST     = os.getenv("POSTGRES_HOST",     "localhost")
+_DB_PORT     = os.getenv("POSTGRES_PORT",     "5432")
+_DB_NAME     = os.getenv("POSTGRES_DB",       "car_assistant")
+ 
+DATABASE_URL: str = (
+    f"postgresql+asyncpg://{_DB_USER}:{_DB_PASSWORD}@{_DB_HOST}:{_DB_PORT}/{_DB_NAME}"
+)
 
 # ── OpenAI ────────────────────────────────────────────────────────────────────
 

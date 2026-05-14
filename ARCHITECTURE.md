@@ -39,6 +39,7 @@ Driver speaks
 │     1. Opens a Langfuse child span                           │
 │     2. Calls PydanticAI sub-agent .run(instruction, deps)    │
 │     3. Returns plain-text result string                      │
+│     4. Persists turn + action to Postgres (fire-and-forget)  │
 └────────────────────────┬─────────────────────────────────────┘
                          │  plain-text string
                          ▼
@@ -55,17 +56,35 @@ Driver speaks
 
 ```
 project/
-├── main.py                  Entry point — wires deps, starts bridge
-├── realtime_bridge.py       WebSocket loop + audio I/O + sub-agent dispatch
-├── email_agent.py           PydanticAI email agent (gpt-4.1-mini)
-├── spotify_agent.py         PydanticAI Spotify agent (gpt-4o-mini)
-├── graph_client.py          Async MS Graph API client (MSAL auth + token refresh)
-├── spotify_client.py        Spotify API wrapper (Spotipy OAuth + token refresh)
-├── models.py                Pydantic models + EmailAgentDeps dataclass
-├── tools.py                 Email tool implementations
-├── config.py                Azure + Graph constants (AZURE_CLIENT_ID etc.)
-├── observability.py         Langfuse OTel setup
-└── requirements.txt         Python dependencies
+├── .env                         Your secrets — never commit this
+├── .env.example                 Template showing all required variables
+├── docker-compose.yml           Postgres service (run with docker compose up -d)
+├── alembic.ini                  Alembic configuration
+│
+├── main.py                      Entry point — wires deps, starts bridge
+├── realtime_bridge.py           WebSocket loop + audio I/O + sub-agent dispatch
+├── config.py                    All configuration — single source of truth
+├── observability.py             Langfuse OTel setup
+│
+├── email_agent.py               PydanticAI email agent (gpt-4.1-mini)
+├── graph_client.py              Async MS Graph API client (MSAL auth + token refresh)
+├── models.py                    Pydantic models + EmailAgentDeps dataclass
+├── tools.py                     Email tool implementations
+│
+├── spotify_agent.py             PydanticAI Spotify agent (gpt-4.1-mini)
+├── spotify_client.py            Spotify API wrapper (Spotipy OAuth + token refresh)
+│
+├── db/
+│   ├── models.py                SQLAlchemy ORM table definitions
+│   ├── database.py              Async engine, session factory, init_db()
+│   └── service.py               DatabaseService — all read/write operations
+│
+├── alembic/
+│   ├── env.py                   Async-aware migration environment
+│   └── versions/
+│       └── 0001_initial.py      First migration — creates all tables
+│
+└── requirements.txt
 ```
 
 No `orchestration/` directory, no LangGraph. The bridge IS the orchestrator.
@@ -74,17 +93,40 @@ No `orchestration/` directory, no LangGraph. The bridge IS the orchestrator.
 
 ## Cost design
 
-| Layer          | Model             | Role                                     | Cost      |
-|----------------|-------------------|------------------------------------------|-----------|
-| Realtime model | gpt-realtime-2    | Speech I/O, intent routing only          | Expensive |
-| Email agent    | gpt-4.1-mini      | All email reasoning + tool calls         | Cheap     |
-| Spotify agent  | gpt-4.1-mini      | All Spotify reasoning + tool calls       | Cheap     |
+| Layer          | Model          | Role                                  | Cost      |
+|----------------|----------------|---------------------------------------|-----------|
+| Realtime model | gpt-realtime-2 | Speech I/O, intent routing only       | Expensive |
+| Email agent    | gpt-4.1-mini   | All email reasoning + tool calls      | Cheap     |
+| Spotify agent  | gpt-4.1-mini   | All Spotify reasoning + tool calls    | Cheap     |
 
-Model is set once in `config.SUB_AGENT_MODEL` — change it there to upgrade both agents at once.
+Model is set once in `config.SUB_AGENT_MODEL` — change it there to upgrade
+both agents at once.
 
-The Realtime model stays cheap because it never reads emails, never queries
-Spotify. Its only job is to listen, classify intent as email or spotify,
-package the instruction in a short string, and speak back the result.
+The Realtime model stays cheap because it never reads emails or queries
+Spotify. Its only job is to listen, classify intent, package the instruction
+in a short string, and speak back the result.
+
+---
+
+## Database (Postgres + Docker)
+
+Postgres runs in a Docker container — no manual installation needed. The app
+runs on the host as normal (audio hardware requires host access). All drive
+history is persisted to a named Docker volume so data survives container
+restarts.
+
+### Tables
+
+| Table             | What it stores                                          |
+|-------------------|---------------------------------------------------------|
+| `sessions`        | One row per drive — start time, end time, user          |
+| `turns`           | One row per request — transcript, intent, result, timing|
+| `email_actions`   | Email-specific detail — action type, subject, sender    |
+| `spotify_actions` | Spotify-specific detail — action type, track, artist    |
+| `preferences`     | Per-user settings — priority senders, voice, model      |
+
+DB writes are fire-and-forget (`asyncio.create_task`) so they never block
+the audio stream or delay the spoken response.
 
 ---
 
@@ -100,8 +142,7 @@ realtime-session  [root span — entire drive session]
 ```
 
 All spans share the same `session_id` and appear grouped in Langfuse.
-PydanticAI internal spans (LLM calls, retries, tool calls) are emitted
-automatically via `Agent.instrument_all()` — no manual instrumentation needed.
+PydanticAI internal spans are emitted automatically via `Agent.instrument_all()`.
 
 ---
 
@@ -121,37 +162,38 @@ sudo apt-get install portaudio19-dev python3-dev
 
 **Windows**
 
-On Windows, `pyaudio` bundles its own PortAudio binary via a pre-built wheel
-so no separate system install is needed. However, the standard `pip install
-pyaudio` often fails on Windows because it tries to compile from source.
-Use the pre-built wheel from `pipwin` instead:
+`pip install pyaudio` fails on Windows because it tries to compile from
+source. Use the pre-built wheel from `pipwin` instead:
 
 ```bash
 pip install pipwin
 pipwin install pyaudio
 ```
 
-Alternatively, if you have a specific Python version (e.g. 3.11 64-bit) you
-can grab the matching wheel directly from
-https://www.lfd.uci.edu/~gohlke/pythonlibs/#pyaudio and install it with:
-
+Alternatively download the matching wheel from
+https://www.lfd.uci.edu/~gohlke/pythonlibs/#pyaudio and install with:
 ```bash
-pip install PyAudio‑0.2.14‑cpXX‑cpXX‑win_amd64.whl
+pip install PyAudio-0.2.14-cpXX-cpXX-win_amd64.whl
 ```
-
 Replace `cpXX` with your Python version (e.g. `cp311` for Python 3.11).
+pyaudio works fine on Windows once installed — only the install step differs.
 
-### 2. Python dependencies
+### 2. Install Docker
+
+Download and install Docker Desktop from https://www.docker.com/products/docker-desktop.
+On Linux, install Docker Engine and the Docker Compose plugin via your package manager.
+
+### 3. Python dependencies
 
 ```bash
 pip install -r requirements.txt
 ```
 
-### 3. Environment variables
+### 4. Environment variables
 
-Create a `.env` file in the project root (or export in your shell).
-`config.py` loads this automatically on startup and will raise a clear error
-for any missing required value.
+Copy `.env.example` to `.env` and fill in your values. `config.py` loads
+this automatically on startup and raises a clear error for any missing
+required value.
 
 ```bash
 # OpenAI (Realtime API access required)
@@ -167,6 +209,13 @@ SPOTIFY_CLIENT_ID=...
 SPOTIFY_CLIENT_SECRET=...
 SPOTIFY_REDIRECT_URI=http://127.0.0.1:8888/callback   # must match dashboard
 
+# Postgres — matches docker-compose.yml defaults
+POSTGRES_USER=assistant
+POSTGRES_PASSWORD=assistant
+POSTGRES_DB=car_assistant
+POSTGRES_HOST=localhost                         # optional, default: localhost
+POSTGRES_PORT=5432                              # optional, default: 5432
+
 # Langfuse
 LANGFUSE_PUBLIC_KEY=pk-lf-...
 LANGFUSE_SECRET_KEY=sk-lf-...
@@ -175,14 +224,32 @@ LANGFUSE_BASE_URL=https://cloud.langfuse.com    # optional
 
 **First-run authentication (one time only)**
 
-Email: MSAL will print a URL and short code in the terminal. Open the URL
-in a browser, enter the code, and sign in with your Microsoft 365 account.
-The token is cached to `.token_cache.json`; all future runs refresh silently.
+Email: MSAL prints a URL and short code in the terminal. Open the URL in a
+browser, enter the code, and sign in with your Microsoft 365 account. The
+token is cached to `.token_cache.json`; all future runs refresh silently.
 
-Spotify: Spotipy will open a browser tab for OAuth consent. After approving,
-the token is cached to `.spotify_cache`; all future runs refresh silently.
+Spotify: Spotipy opens a browser tab for OAuth consent. After approving, the
+token is cached to `.spotify_cache`; all future runs refresh silently.
 
-### 4. Run
+### 5. Start Postgres
+
+```bash
+docker compose up -d
+```
+
+Postgres is now running on `localhost:5432`. Data is persisted to a named
+Docker volume and survives container restarts.
+
+### 6. Run the database migration
+
+```bash
+alembic upgrade head
+```
+
+This creates all five tables. Only needed on first run and after any future
+schema changes.
+
+### 7. Run the assistant
 
 ```bash
 python main.py
@@ -213,5 +280,7 @@ Speak to the assistant. Press Ctrl+C to end the session.
    `handle_navigation_request(instruction)`
 3. Add a `_run_navigation_agent()` method to `RealtimeBridge`
 4. Add a `case "handle_navigation_request"` branch in `_handle_tool_call()`
+5. Add a `create_navigation_action()` method to `db/service.py`
+6. Add a `navigation_actions` table to `db/models.py` and a new migration
 
-Four small, isolated changes. Nothing else needs to touch.
+Six small, isolated changes. Nothing else needs to touch.

@@ -26,7 +26,7 @@ Architecture
        │ PCM 24 kHz
        ▼
   ┌─────────────────────────────────────────────────────────┐
-  │   OpenAI Realtime API  (gpt-realtime-2)                 │
+  │   OpenAI Realtime API  (gpt-realtime-mini)              │
   │                                                         │
   │   • Listens (semantic VAD, auto turn detection)         │
   │   • Detects intent: email OR spotify                    │
@@ -90,9 +90,15 @@ import websockets
 from websockets.asyncio.client import ClientConnection
 
 from shared.observability import LangfuseObserver
+from db.service import DatabaseService
+
 
 logger = logging.getLogger(__name__)
 
+def import_config_user_email() -> str:
+    """Lazy helper — reads AZURE_USER_EMAIL from config after load_dotenv."""
+    import shared.config as config  # noqa: PLC0415
+    return config.AZURE_USER_EMAIL
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -212,10 +218,12 @@ class RealtimeBridge:
         observer: LangfuseObserver,
         email_deps: Any | None,
         spotify_deps: Any | None,
+        db: DatabaseService | None = None,
     ) -> None:
         self._observer    = observer
         self._email_deps   = email_deps
         self._spotify_deps = spotify_deps
+        self._db = db
 
         # Unique ID for this drive session — used to group all Langfuse spans
         self._session_id: str = str(uuid.uuid4())
@@ -232,6 +240,11 @@ class RealtimeBridge:
         # Accumulate streamed function-call argument deltas keyed by item_id
         # Structure: { item_id: {"name": str, "call_id": str, "args": str} }
         self._pending_calls: dict[str, dict[str, str]] = {}
+
+        # Maps call_id → transcript so we can attach driver speech to a turn
+        self._pending_transcripts: dict[str, str] = {}
+        # Holds the most recent driver transcript not yet assigned to a turn
+        self._latest_transcript: str | None = None
 
     # ── Public entry point ────────────────────────────────────────────────────
 
@@ -267,6 +280,15 @@ class RealtimeBridge:
                     )
                     await self._configure_session()
 
+                      # Record session start
+                    if self._db:
+                        asyncio.create_task(
+                            self._db.create_session(
+                                self._session_id,
+                                import_config_user_email(),
+                            )
+                        )
+
                     # Run all three loops concurrently; if any raises the
                     # others are cancelled
                     await asyncio.gather(
@@ -274,6 +296,12 @@ class RealtimeBridge:
                         self._mic_producer(),
                         self._speaker_consumer(),
                     )
+
+                    # Record session end
+                    if self._db:
+                        asyncio.create_task(
+                            self._db.end_session(self._session_id)
+                        )
 
                 session_trace.success("session ended normally")
 
@@ -368,10 +396,12 @@ class RealtimeBridge:
                     logger.debug("Model: %s", event.get("delta", ""))
 
                 case "conversation.item.input_audio_transcription.completed":
+                    transcript = event.get("transcript", "")
                     logger.info(
                         "Driver said: %r",
                         event.get("transcript", ""),
                     )
+                    self._latest_transcript = transcript
 
                 # ── Function call argument streaming ──────────────────────
 
@@ -502,18 +532,43 @@ class RealtimeBridge:
 
         logger.info("Tool call  name=%s  instruction=%r", name, instruction)
 
+        # Capture and clear the latest transcript so it belongs to this turn
+        transcript = self._latest_transcript
+        self._latest_transcript = None
+ 
+        # Track timing for the DB record
+        import time  # noqa: PLC0415
+        start_ms = int(time.monotonic() * 1000)
+
         # Dispatch and trace
         match name:
             case "handle_email_request":
+                intent = "email"
                 result = await self._run_email_agent(instruction)
             case "handle_spotify_request":
+                intent = "spotify"
                 result = await self._run_spotify_agent(instruction)
             case _:
+                intent = "unknown"
                 logger.warning("Unknown tool: %s", name)
                 result = (
                     "I am not sure how to handle that. "
                     "I can help with emails or Spotify."
                 )
+
+        duration_ms = int(time.monotonic() * 1000) - start_ms
+ 
+        # Write turn + action to DB (fire-and-forget)
+        if self._db:
+            asyncio.create_task(
+                self._persist_turn(
+                    intent=intent,
+                    instruction=instruction,
+                    result=result,
+                    duration_ms=duration_ms,
+                    transcript=transcript,
+                )
+            )
 
         # Feed the result back to the Realtime model so it can speak it
         await self._return_tool_result(call_id, result)
@@ -571,6 +626,53 @@ class RealtimeBridge:
                 logger.exception("spotify_agent error: %s", exc)
 
         return result
+    
+
+    # ── DB persistence ────────────────────────────────────────────────────────
+ 
+    async def _persist_turn(
+        self,
+        intent: str,
+        instruction: str,
+        result: str,
+        duration_ms: int,
+        transcript: str | None,
+    ) -> None:
+        """
+        Write a completed turn and its domain action to the database.
+        Called as a fire-and-forget task — never raises to the caller.
+        """
+        if not self._db:
+            return
+        try:
+            turn_id = await self._db.create_turn(
+                session_id=self._session_id,
+                intent=intent,
+                instruction=instruction,
+                result=result,
+                duration_ms=duration_ms,
+                transcript=transcript,
+            )
+            if turn_id is None:
+                logger.warning("DB: skipping action insert — turn was not created")
+                return
+            if intent == "email":
+                await self._db.create_email_action(
+                    session_id=self._session_id,
+                    turn_id=turn_id,
+                    instruction=instruction,
+                    result=result,
+                )
+            elif intent == "spotify":
+                await self._db.create_spotify_action(
+                    session_id=self._session_id,
+                    turn_id=turn_id,
+                    instruction=instruction,
+                    result=result,
+                )
+        except Exception as exc:
+            logger.warning("DB: _persist_turn failed: %s", exc)
+
 
     # ── Result injection ──────────────────────────────────────────────────────
 
@@ -597,6 +699,7 @@ class RealtimeBridge:
                 "output_modalities": ["audio"],
             },
         })
+        logger.debug("Injected tool result  call_id=%s  len=%d", call_id, len(result))
 
     # ── Audio I/O ─────────────────────────────────────────────────────────────
 
@@ -612,7 +715,7 @@ class RealtimeBridge:
         try:
             import pyaudio
         except ImportError:
-            logger.warning("pyaudio is not installed — speaker output disabled.")
+            logger.warning("pyaudio is not installed — microphone input disabled.")
             try:
                 while True:
                     await asyncio.sleep(3600)
