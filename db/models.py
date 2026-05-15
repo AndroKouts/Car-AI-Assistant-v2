@@ -10,17 +10,6 @@ turns           One row per tool call (email or Spotify request).
 email_actions   One row per email read/reply/send within a turn.
 spotify_actions One row per Spotify action within a turn.
 preferences     One row per user — configurable settings.
-
-Design notes
-────────────
-- All primary keys are UUIDs stored as TEXT. We already generate session
-  UUIDs in the bridge; turn and action IDs are generated here at insert time.
-- Timestamps are stored as TEXT in ISO 8601 format (UTC). Simple, portable,
-  and directly comparable as strings for ordering.
-- JSON fields (priority_senders, blocked_senders) are stored as TEXT and
-  serialised/deserialised by the service layer — keeps the model simple.
-- All foreign keys use ondelete="CASCADE" so deleting a session cleans up
-  all its turns and actions automatically.
 """
 
 from __future__ import annotations
@@ -80,7 +69,7 @@ class EmailAction(Base):
         Text, ForeignKey("turns.id", ondelete="CASCADE"), nullable=False
     )
     timestamp: Mapped[str] = mapped_column(Text, nullable=False)
-    action: Mapped[str] = mapped_column(Text, nullable=False)   # read | reply | send
+    action: Mapped[str] = mapped_column(Text, nullable=False)
     email_id: Mapped[str | None] = mapped_column(Text, nullable=True)
     subject: Mapped[str | None] = mapped_column(Text, nullable=True)
     sender_email: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -100,7 +89,7 @@ class SpotifyAction(Base):
         Text, ForeignKey("turns.id", ondelete="CASCADE"), nullable=False
     )
     timestamp: Mapped[str] = mapped_column(Text, nullable=False)
-    action: Mapped[str] = mapped_column(Text, nullable=False)  # play | pause | skip | volume | queue
+    action: Mapped[str] = mapped_column(Text, nullable=False)
     track_name: Mapped[str | None] = mapped_column(Text, nullable=True)
     artist: Mapped[str | None] = mapped_column(Text, nullable=True)
     query: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -112,8 +101,15 @@ class Preference(Base):
     __tablename__ = "preferences"
 
     user_email: Mapped[str] = mapped_column(Text, primary_key=True)
-    priority_senders: Mapped[str] = mapped_column(Text, default="[]")   # JSON array
-    blocked_senders: Mapped[str] = mapped_column(Text, default="[]")    # JSON array
+    # Email
+    microsoft_email: Mapped[str] = mapped_column(Text, default="")
+    priority_senders: Mapped[str] = mapped_column(Text, default="[]")
+    blocked_senders: Mapped[str] = mapped_column(Text, default="[]")
+    # Spotify
+    default_volume: Mapped[int] = mapped_column(Integer, default=50)
+    startup_playlist: Mapped[str] = mapped_column(Text, default="")
+    preferred_device: Mapped[str] = mapped_column(Text, default="")
+    # Assistant
     assistant_voice: Mapped[str] = mapped_column(Text, default="alloy")
     sub_agent_model: Mapped[str] = mapped_column(Text, default="openai:gpt-4.1-mini")
-    driving_mode: Mapped[int] = mapped_column(Integer, default=1)       # 1 = True
+    driving_mode: Mapped[int] = mapped_column(Integer, default=1)

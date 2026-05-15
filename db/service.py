@@ -295,6 +295,55 @@ class DatabaseService:
                 sub_agent_model=config.SUB_AGENT_MODEL,
                 driving_mode=1,
             )
+        
+    
+    async def update_preferences(
+        self,
+        user_email: str,
+        microsoft_email: str | None = None,
+        priority_senders: list[str] | None = None,
+        blocked_senders: list[str] | None = None,
+        default_volume: int | None = None,
+        startup_playlist: str | None = None,
+        preferred_device: str | None = None,
+        assistant_voice: str | None = None,
+        sub_agent_model: str | None = None,
+        driving_mode: bool | None = None,
+    ) -> Preference | None:
+        """Update preference fields for a user. Only provided fields are updated."""
+        try:
+            async with get_session() as db:
+                result = await db.execute(
+                    select(Preference).where(Preference.user_email == user_email)
+                )
+                prefs = result.scalar_one_or_none()
+                if prefs is None:
+                    prefs = Preference(user_email=user_email)
+                    db.add(prefs)
+ 
+                if microsoft_email is not None:
+                    prefs.microsoft_email = microsoft_email
+                if priority_senders is not None:
+                    prefs.priority_senders = json.dumps(priority_senders)
+                if blocked_senders is not None:
+                    prefs.blocked_senders = json.dumps(blocked_senders)
+                if default_volume is not None:
+                    prefs.default_volume = max(0, min(100, default_volume))
+                if startup_playlist is not None:
+                    prefs.startup_playlist = startup_playlist
+                if preferred_device is not None:
+                    prefs.preferred_device = preferred_device
+                if assistant_voice is not None:
+                    prefs.assistant_voice = assistant_voice
+                if sub_agent_model is not None:
+                    prefs.sub_agent_model = sub_agent_model
+                if driving_mode is not None:
+                    prefs.driving_mode = 1 if driving_mode else 0
+ 
+                return prefs
+        except Exception as exc:
+            logger.warning("DB: update_preferences failed: %s", exc)
+            return None
 
     async def get_priority_senders(self, user_email: str) -> list[str]:
         """Return the list of priority sender email addresses for a user."""
