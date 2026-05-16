@@ -4,6 +4,7 @@ import SessionList from './components/SessionList'
 import SessionDetail from './components/SessionDetail'
 import PreferencesPanel from './components/PreferencesPanel'
 import AssistantControls from './components/AssistantControls'
+import LivePage from './pages/LivePage'
 import { getStatus } from './api'
 
 export default function App() {
@@ -35,6 +36,9 @@ export default function App() {
             <NavLink to="/" end style={({ isActive }) => navStyle(isActive)}>
               Sessions
             </NavLink>
+            <NavLink to="/live" style={({ isActive }) => navStyle(isActive)}>
+              Live
+            </NavLink>
             <NavLink to="/preferences" style={({ isActive }) => navStyle(isActive)}>
               Preferences
             </NavLink>
@@ -48,6 +52,7 @@ export default function App() {
         <Routes>
           <Route path="/" element={<SessionList />} />
           <Route path="/sessions/:id" element={<SessionDetail />} />
+          <Route path="/live" element={<LivePage sessionActive={status.running} />} />
           <Route path="/preferences" element={<PreferencesPanel />} />
         </Routes>
       </main>

@@ -91,6 +91,7 @@ from websockets.asyncio.client import ClientConnection
 
 from shared.observability import LangfuseObserver
 from db.service import DatabaseService
+from api.routes.live import push_event
 
 
 logger = logging.getLogger(__name__)
@@ -288,6 +289,9 @@ class RealtimeBridge:
                                 import_config_user_email(),
                             )
                         )
+                    
+                    asyncio.create_task(push_event({"type": "session", "active": True}))
+                    asyncio.create_task(push_event({"type": "state", "state": "listening"}))
 
                     # Run all three loops concurrently; if any raises the
                     # others are cancelled
@@ -302,6 +306,9 @@ class RealtimeBridge:
                         asyncio.create_task(
                             self._db.end_session(self._session_id)
                         )
+
+                    asyncio.create_task(push_event({"type": "session", "active": False}))
+                    asyncio.create_task(push_event({"type": "state", "state": "idle"}))
 
                 session_trace.success("session ended normally")
 
@@ -376,32 +383,71 @@ class RealtimeBridge:
 
                 case "input_audio_buffer.speech_started":
                     logger.debug("Driver: started speaking")
+                    asyncio.create_task(push_event({
+                        "type": "state",
+                        "state": "listening"
+                    }))
 
                 case "input_audio_buffer.speech_stopped":
                     logger.debug("Driver: stopped speaking")
+                    asyncio.create_task(push_event({
+                        "type": "state",
+                        "state": "processing"
+                    }))
 
                 # ── Streaming audio output ────────────────────────────────
 
                 case "response.output_audio.delta" | "response.audio.delta":
                     delta_b64 = event.get("delta", "")
+
+                    asyncio.create_task(push_event({
+                        "type": "state",
+                        "state": "speaking"
+                    }))
+
                     if delta_b64:
                         await self._audio_out.put(base64.b64decode(delta_b64))
 
                 case "response.output_audio.done" | "response.audio.done":
                     await self._audio_out.put(None)
 
+                    asyncio.create_task(push_event({
+                        "type": "state",
+                        "state": "listening"
+                    }))
+
                 # ── Transcript (for logging / debugging only) ─────────────
 
                 case "response.audio_transcript.delta":
-                    logger.debug("Model: %s", event.get("delta", ""))
+                    delta = event.get("delta", "")
+
+                    logger.debug("Model: %s", delta)
+
+                    if delta:
+                        asyncio.create_task(push_event({
+                            "type": "transcript",
+                            "role": "assistant",
+                            "text": delta,
+                            "final": False,
+                        }))
 
                 case "conversation.item.input_audio_transcription.completed":
                     transcript = event.get("transcript", "")
+
                     logger.info(
                         "Driver said: %r",
-                        event.get("transcript", ""),
+                        transcript,
                     )
+
                     self._latest_transcript = transcript
+
+                    if transcript:
+                        asyncio.create_task(push_event({
+                            "type": "transcript",
+                            "role": "user",
+                            "text": transcript,
+                            "final": True,
+                        }))
 
                 # ── Function call argument streaming ──────────────────────
 
@@ -555,6 +601,12 @@ class RealtimeBridge:
                     "I am not sure how to handle that. "
                     "I can help with emails or Spotify."
                 )
+        
+        asyncio.create_task(push_event({
+            "type": "action",
+            "intent": intent,
+            "text": result
+        }))
 
         duration_ms = int(time.monotonic() * 1000) - start_ms
  

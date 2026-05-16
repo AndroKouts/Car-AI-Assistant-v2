@@ -20,13 +20,12 @@ import logging
 import sys
 from contextlib import asynccontextmanager
 
-from api.routes import preferences
-import shared.config as config  # noqa: F401 — triggers load_dotenv() and env validation
+import shared.config  as config # noqa: F401 — triggers load_dotenv() and env validation
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
-from api.routes import assistant, sessions
+from api.routes import assistant, live, preferences, sessions
 from db.database import init_db
 from shared.observability import setup_observability
 
@@ -77,6 +76,7 @@ app.add_middleware(
 app.include_router(sessions.router, prefix="/api")
 app.include_router(preferences.router, prefix="/api")
 app.include_router(assistant.router, prefix="/api")
+app.include_router(live.router)
 
 # ── Static frontend (production) ──────────────────────────────────────────────
 # After `cd frontend && npm run build`, serve the built React app.

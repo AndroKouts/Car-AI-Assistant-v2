@@ -75,3 +75,56 @@ input:focus, select:focus { border-color: var(--accent); }
 .page-title { font-size: 22px; font-weight: 700; margin-bottom: 24px; }
 .dim { color: var(--text-dim); font-size: 13px; }
 .gap { display: flex; flex-direction: column; gap: 12px; }
+
+/* ── Orb animations ──────────────────────────────────────────────────────── */
+
+.orb {
+  width: 140px;
+  height: 140px;
+  border-radius: 50%;
+  background: var(--orb-color);
+  box-shadow: 0 0 40px var(--orb-glow), 0 0 80px var(--orb-glow);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.6s, box-shadow 0.6s;
+  position: relative;
+}
+
+.orb-inner {
+  width: 60%;
+  height: 60%;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.08);
+  backdrop-filter: blur(4px);
+}
+
+@keyframes pulse-slow {
+  0%, 100% { transform: scale(1);    box-shadow: 0 0 30px var(--orb-glow); }
+  50%       { transform: scale(1.04); box-shadow: 0 0 50px var(--orb-glow); }
+}
+
+@keyframes pulse-medium {
+  0%, 100% { transform: scale(1);    box-shadow: 0 0 40px var(--orb-glow); }
+  50%       { transform: scale(1.07); box-shadow: 0 0 70px var(--orb-glow); }
+}
+
+@keyframes pulse-fast {
+  0%, 100% { transform: scale(1);    box-shadow: 0 0 35px var(--orb-glow); }
+  33%       { transform: scale(1.05); box-shadow: 0 0 65px var(--orb-glow); }
+  66%       { transform: scale(0.97); box-shadow: 0 0 25px var(--orb-glow); }
+}
+
+@keyframes pulse-speaking {
+  0%   { transform: scale(1);    box-shadow: 0 0 40px var(--orb-glow); }
+  20%  { transform: scale(1.09); box-shadow: 0 0 80px var(--orb-glow); }
+  40%  { transform: scale(1.03); box-shadow: 0 0 55px var(--orb-glow); }
+  60%  { transform: scale(1.08); box-shadow: 0 0 75px var(--orb-glow); }
+  80%  { transform: scale(1.02); box-shadow: 0 0 50px var(--orb-glow); }
+  100% { transform: scale(1);    box-shadow: 0 0 40px var(--orb-glow); }
+}
+
+.pulse-slow    { animation: pulse-slow    3.5s ease-in-out infinite; }
+.pulse-medium  { animation: pulse-medium  1.8s ease-in-out infinite; }
+.pulse-fast    { animation: pulse-fast    1.0s ease-in-out infinite; }
+.pulse-speaking { animation: pulse-speaking 0.7s ease-in-out infinite; }

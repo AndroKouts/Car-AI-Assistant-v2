@@ -2,7 +2,9 @@
 
 A hands-free voice assistant for the car. Speak naturally; the assistant
 controls your email (Microsoft 365) and Spotify through specialised
-sub-agents while you keep your eyes on the road.
+sub-agents while you keep your eyes on the road. A React dashboard lets
+you review drive history, track activity, and configure the assistant
+from your browser.
 
 ---
 
@@ -52,27 +54,65 @@ Driver speaks
 
 ---
 
+## System overview
+
+```
+Browser (localhost:5173 dev / localhost:8000 prod)
+     │
+     │  HTTP / REST
+     ▼
+┌─────────────────────────────────────────────────────────────┐
+│                    FastAPI  (server.py)                      │
+│                                                             │
+│  GET  /api/sessions              session history            │
+│  GET  /api/sessions/{id}/turns   turn detail                │
+│  GET  /api/sessions/{id}/spotify spotify actions            │
+│  GET  /api/sessions/{id}/email   email actions              │
+│  GET  /api/preferences           load settings              │
+│  PUT  /api/preferences           save settings              │
+│  POST /api/assistant/start       start bridge task          │
+│  POST /api/assistant/stop        stop bridge task           │
+│  GET  /api/assistant/status      is assistant running?      │
+│  WS   /ws/live                   real-time event stream     │
+└──────────────┬──────────────────────────┬───────────────────┘
+               │                          │
+               ▼                          ▼
+        PostgreSQL DB             RealtimeBridge
+        (Docker)                  (asyncio.Task)
+```
+
+---
+
 ## File structure
 
 ```
 project/
 ├── .env                         Your secrets — never commit this
 ├── .env.example                 Template showing all required variables
-├── docker-compose.yml           Postgres service (run with docker compose up -d)
+├── docker-compose.yml           Postgres service
 ├── alembic.ini                  Alembic configuration
 │
-├── main.py                      Entry point — wires deps, starts bridge
+├── server.py                    FastAPI entry point — replaces main.py
 ├── realtime_bridge.py           WebSocket loop + audio I/O + sub-agent dispatch
 ├── config.py                    All configuration — single source of truth
 ├── observability.py             Langfuse OTel setup
 │
+├── api/
+│   ├── __init__.py
+│   └── routes/
+│       ├── __init__.py
+│       ├── sessions.py          Session + turn + action endpoints
+│       ├── preferences.py       GET + PUT preferences
+│       ├── assistant.py         Start / stop / status
+│       └── live.py              WebSocket /ws/live — real-time events
+│
 ├── email_agent.py               PydanticAI email agent (gpt-4.1-mini)
-├── graph_client.py              Async MS Graph API client (MSAL auth + token refresh)
-├── models.py                    Pydantic models + EmailAgentDeps dataclass
+├── graph_client.py              Async MS Graph API client (MSAL auth)
+├── models.py                    Pydantic models + EmailAgentDeps
 ├── tools.py                     Email tool implementations
 │
 ├── spotify_agent.py             PydanticAI Spotify agent (gpt-4.1-mini)
-├── spotify_client.py            Spotify API wrapper (Spotipy OAuth + token refresh)
+├── spotify_client.py            Spotify API wrapper (Spotipy OAuth)
 │
 ├── db/
 │   ├── models.py                SQLAlchemy ORM table definitions
@@ -82,12 +122,35 @@ project/
 ├── alembic/
 │   ├── env.py                   Async-aware migration environment
 │   └── versions/
-│       └── 0001_initial.py      First migration — creates all tables
+│       ├── 0001_initial.py      Creates all tables
+│       └── 0002_preferences_update.py  Adds new preference columns
+│
+├── frontend/
+│   ├── package.json
+│   ├── vite.config.js
+│   ├── index.html
+│   └── src/
+│       ├── main.jsx             React entry point
+│       ├── App.jsx              Router + persistent header
+│       ├── api.js               All API calls in one place
+│       ├── index.css            Global styles + orb animations
+│       ├── hooks/
+│       │   └── useWebSocket.js  WebSocket hook with auto-reconnect
+│       ├── pages/
+│       │   └── LivePage.jsx     Live session view
+│       └── components/
+│           ├── AssistantControls.jsx   Start/Stop button + status indicator
+│           ├── AssistantVisualiser.jsx Orb + transcript feed + action card
+│           ├── SessionList.jsx         Drive history list
+│           ├── SessionDetail.jsx       Session drill-down with tabs
+│           └── PreferencesPanel.jsx    Settings form
 │
 └── requirements.txt
 ```
 
 No `orchestration/` directory, no LangGraph. The bridge IS the orchestrator.
+The assistant runs as an `asyncio.Task` inside the FastAPI process, controlled
+from the browser.
 
 ---
 
@@ -111,9 +174,8 @@ in a short string, and speak back the result.
 ## Database (Postgres + Docker)
 
 Postgres runs in a Docker container — no manual installation needed. The app
-runs on the host as normal (audio hardware requires host access). All drive
-history is persisted to a named Docker volume so data survives container
-restarts.
+runs on the host (audio hardware requires host access). All drive history is
+persisted to a named Docker volume so data survives container restarts.
 
 ### Tables
 
@@ -123,10 +185,48 @@ restarts.
 | `turns`           | One row per request — transcript, intent, result, timing|
 | `email_actions`   | Email-specific detail — action type, subject, sender    |
 | `spotify_actions` | Spotify-specific detail — action type, track, artist    |
-| `preferences`     | Per-user settings — priority senders, voice, model      |
+| `preferences`     | Per-user settings — senders, voice, volume, model       |
 
 DB writes are fire-and-forget (`asyncio.create_task`) so they never block
 the audio stream or delay the spoken response.
+
+---
+
+## Dashboard (React + FastAPI)
+
+The dashboard runs at `localhost:8000` (production) or `localhost:5173`
+(development). It has three screens:
+
+**Live view** — dedicated page showing the assistant in real time:
+- Animated orb that changes colour and pulse speed based on state
+  (idle → listening → thinking → speaking)
+- Live transcript feed showing driver speech and assistant responses
+  as chat bubbles, streaming word by word as the assistant speaks
+- Action card that appears when a tool completes, showing what the
+  assistant just did (e.g. "Playing Bohemian Rhapsody by Queen")
+- All driven by a persistent WebSocket connection to the server
+
+**Session list** — all drive sessions, date, duration, request count,
+live/completed status. Click any row to drill in.
+
+**Session detail** — three tabs:
+- All Requests — full turn log with transcript, intent, instruction, result, timing
+- Spotify — every track played, skipped, or queued with artist
+- Email — every email read, replied to, or sent
+
+**Preferences** — settings form that writes directly to the database:
+- Microsoft account email
+- Priority and blocked senders (tag input)
+- Default Spotify volume (slider)
+- Startup playlist / mood
+- Preferred Spotify device
+- Assistant voice (dropdown)
+- Sub-agent model (dropdown)
+- Driving mode toggle
+
+The **Start Session / Stop Session** button lives in the header on every page.
+Clicking Start launches the bridge as a background task; clicking Stop cancels
+it and finalises the session record in the database.
 
 ---
 
@@ -163,25 +263,19 @@ sudo apt-get install portaudio19-dev python3-dev
 **Windows**
 
 `pip install pyaudio` fails on Windows because it tries to compile from
-source. Use the pre-built wheel from `pipwin` instead:
-
+source. Use `pipwin` instead:
 ```bash
 pip install pipwin
 pipwin install pyaudio
 ```
-
-Alternatively download the matching wheel from
-https://www.lfd.uci.edu/~gohlke/pythonlibs/#pyaudio and install with:
-```bash
-pip install PyAudio-0.2.14-cpXX-cpXX-win_amd64.whl
-```
-Replace `cpXX` with your Python version (e.g. `cp311` for Python 3.11).
 pyaudio works fine on Windows once installed — only the install step differs.
 
-### 2. Install Docker
+### 2. Install Docker Desktop
 
-Download and install Docker Desktop from https://www.docker.com/products/docker-desktop.
-On Linux, install Docker Engine and the Docker Compose plugin via your package manager.
+Download from https://www.docker.com/products/docker-desktop and install it.
+Open Docker Desktop and wait for the engine to show as running before
+continuing. On Linux, install Docker Engine and the Compose plugin via your
+package manager instead.
 
 ### 3. Python dependencies
 
@@ -189,73 +283,108 @@ On Linux, install Docker Engine and the Docker Compose plugin via your package m
 pip install -r requirements.txt
 ```
 
-### 4. Environment variables
-
-Copy `.env.example` to `.env` and fill in your values. `config.py` loads
-this automatically on startup and raises a clear error for any missing
-required value.
+### 4. Frontend dependencies (first time only)
 
 ```bash
-# OpenAI (Realtime API access required)
+cd frontend && npm install && cd ..
+```
+
+### 5. Environment variables
+
+Copy `.env.example` to `.env` and fill in your values.
+
+```bash
+# OpenAI
 OPENAI_API_KEY=sk-...
 
-# Microsoft 365 / Azure — from your Azure app registration
+# Microsoft 365 / Azure
 AZURE_CLIENT_ID=xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
-AZURE_USER_EMAIL=you@yourcompany.com
-AZURE_TENANT_ID=common                          # optional, default: common
+AZURE_USER_EMAIL=you@outlook.com
+AZURE_TENANT_ID=common                              # optional
 
-# Spotify — from your Spotify Developer Dashboard
+# Spotify
 SPOTIFY_CLIENT_ID=...
 SPOTIFY_CLIENT_SECRET=...
-SPOTIFY_REDIRECT_URI=http://127.0.0.1:8888/callback   # must match dashboard
+SPOTIFY_REDIRECT_URI=http://127.0.0.1:8888/callback
 
-# Postgres — matches docker-compose.yml defaults
+# Postgres
 POSTGRES_USER=assistant
 POSTGRES_PASSWORD=assistant
 POSTGRES_DB=car_assistant
-POSTGRES_HOST=localhost                         # optional, default: localhost
-POSTGRES_PORT=5432                              # optional, default: 5432
 
 # Langfuse
 LANGFUSE_PUBLIC_KEY=pk-lf-...
 LANGFUSE_SECRET_KEY=sk-lf-...
-LANGFUSE_BASE_URL=https://cloud.langfuse.com    # optional
 ```
 
 **First-run authentication (one time only)**
 
-Email: MSAL prints a URL and short code in the terminal. Open the URL in a
-browser, enter the code, and sign in with your Microsoft 365 account. The
-token is cached to `.token_cache.json`; all future runs refresh silently.
+Email: MSAL prints a URL and short code in the terminal. Open the URL,
+enter the code, sign in. Token cached to `.token_cache.json` — silent
+refresh from then on.
 
-Spotify: Spotipy opens a browser tab for OAuth consent. After approving, the
-token is cached to `.spotify_cache`; all future runs refresh silently.
+Spotify: Spotipy opens a browser tab for OAuth consent. Token cached to
+`.spotify_cache` — silent refresh from then on.
 
-### 5. Start Postgres
+### 6. Start Postgres
 
 ```bash
 docker compose up -d
 ```
 
-Postgres is now running on `localhost:5432`. Data is persisted to a named
-Docker volume and survives container restarts.
+Postgres runs on `localhost:5432`. The container restarts automatically
+when Docker Desktop starts — you never need to run this again unless you
+manually stopped it.
 
-### 6. Run the database migration
+### 7. Run the database migrations
 
 ```bash
 alembic upgrade head
 ```
 
-This creates all five tables. Only needed on first run and after any future
-schema changes.
+Creates all five tables. Only needed on first run and after schema changes.
 
-### 7. Run the assistant
+### 8. Run the server
 
 ```bash
-python main.py
+uvicorn server:app --reload --port 8000
 ```
 
-Speak to the assistant. Press Ctrl+C to end the session.
+### 9. Run the frontend (development)
+
+```bash
+cd frontend && npm run dev
+```
+
+Open `http://localhost:5173`. Click **Start Session** to begin a drive.
+
+---
+
+## Production (single command)
+
+Build the frontend once:
+```bash
+cd frontend && npm run build && cd ..
+```
+
+Then only run FastAPI:
+```bash
+uvicorn server:app --port 8000
+```
+
+Open `http://localhost:8000`. Everything — dashboard and API — is served
+from one URL. No separate Vite server needed.
+
+---
+
+## Day to day usage
+
+1. Open Docker Desktop — wait for engine to show running
+2. Run `uvicorn server:app --port 8000`
+3. Open `http://localhost:8000`
+4. Click **Start Session** — speak to the assistant
+5. Click **Stop Session** when done
+6. Review the drive in the session history
 
 ---
 
@@ -276,11 +405,12 @@ Speak to the assistant. Press Ctrl+C to end the session.
 ## Adding a third capability (e.g. navigation)
 
 1. Build a new PydanticAI agent: `navigation_agent.py`
-2. Add one tool entry to `_REALTIME_TOOLS` in `realtime_bridge.py`:
-   `handle_navigation_request(instruction)`
-3. Add a `_run_navigation_agent()` method to `RealtimeBridge`
-4. Add a `case "handle_navigation_request"` branch in `_handle_tool_call()`
-5. Add a `create_navigation_action()` method to `db/service.py`
-6. Add a `navigation_actions` table to `db/models.py` and a new migration
+2. Add one tool to `_REALTIME_TOOLS` in `realtime_bridge.py`
+3. Add `_run_navigation_agent()` to `RealtimeBridge`
+4. Add a `case` branch in `_handle_tool_call()`
+5. Add `create_navigation_action()` to `db/service.py`
+6. Add a `navigation_actions` table to `db/models.py` + new migration
+7. Add API endpoints in `api/routes/sessions.py`
+8. Add a tab in `SessionDetail.jsx`
 
-Six small, isolated changes. Nothing else needs to touch.
+Eight small, isolated changes. Nothing else needs to touch.
