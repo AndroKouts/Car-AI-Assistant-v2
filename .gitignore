@@ -36,3 +36,7 @@ build/
 # OS files
 .DS_Store
 Thumbs.db
+
+#caches
+.spotify_cache
+.token_cache.json
